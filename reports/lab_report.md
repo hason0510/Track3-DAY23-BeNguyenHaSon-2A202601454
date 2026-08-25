@@ -5,7 +5,7 @@
 ## 1. Thông tin sinh viên
 
 - Họ tên: Bé Nguyễn Hà Sơn (2A202601454)
-- Repo/commit: DAY23_TRACK3_2A202601454_BeNguyenHaSon, branch `main`
+- Repo/commit: https://github.com/hason0510/Track3-DAY23-BeNguyenHaSon-2A202601454
 - Provider: OpenAI (`gpt-4o-mini` qua `get_llm()`)
 
 ## 2. Kiến trúc
