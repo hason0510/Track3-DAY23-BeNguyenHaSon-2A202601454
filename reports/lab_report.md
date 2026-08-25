@@ -1,21 +1,14 @@
-"""Report generation helper.
+# Day 08 Lab Report — LangGraph Agentic Orchestration
 
-``render_report()`` turns a :class:`MetricsReport` into the completed lab report
-described by ``reports/lab_report_template.md``: run summary, per-scenario table,
-architecture, state schema, failure analysis, persistence evidence and next steps.
+> Báo cáo được sinh tự động bởi `render_report()` từ `outputs/metrics.json`.
 
-The rendered report is written in Vietnamese; identifiers, node names, field names and
-code blocks stay in their original form so they match the source.
-"""
+## 1. Thông tin sinh viên
 
-from __future__ import annotations
+- Họ tên: Bé Nguyễn Hà Sơn (2A202601454)
+- Repo/commit: DAY23_TRACK3_2A202601454_BeNguyenHaSon, branch `main`
+- Provider: OpenAI (`gpt-4o-mini` qua `get_llm()`)
 
-import json
-from pathlib import Path
-
-from .metrics import MetricsReport, ScenarioMetric
-
-_ARCHITECTURE = """## 2. Kiến trúc
+## 2. Kiến trúc
 
 Mười một node, tám fixed edge và bốn conditional edge. Chính các conditional edge là lý do
 dùng LangGraph thay vì một chain tuyến tính: retry loop và approval gate là chu trình và
@@ -77,9 +70,33 @@ reducer merge vào state.
 | `tool_results` | append (`add`) | kết quả tool theo thứ tự thời gian |
 | `errors` | append (`add`) | ghi chú lỗi theo thứ tự thời gian |
 | `events` | append (`add`) | audit event chuẩn hoá từ `make_event()` |
-"""
 
-_FAILURE_ANALYSIS = """## 5. Phân tích failure mode
+## 4. Kết quả scenario
+
+| Chỉ số | Giá trị |
+|---|---:|
+| Tổng số scenario | 7 |
+| Tỉ lệ thành công | 100% |
+| Số node trung bình mỗi run | 6.43 |
+| Tổng số lần retry | 3 |
+| Tổng số lần vào approval | 2 |
+| Đã kiểm chứng resume / state history | có |
+
+| Scenario | Route mong đợi | Route thực tế | Kết quả | Retry | Approval | Event | Cần duyệt | Quan sát được duyệt | Latency (ms) |
+|---|---|---|---|---:|---:|---:|---|---|---:|
+| S01_simple | simple | simple | PASS | 0 | 0 | 4 | không | không | 5413 |
+| S02_tool | tool | tool | PASS | 0 | 0 | 6 | không | không | 4741 |
+| S03_missing | missing_info | missing_info | PASS | 0 | 0 | 4 | không | không | 5019 |
+| S04_risky | risky | risky | PASS | 0 | 1 | 8 | có | có | 8693 |
+| S05_error | error | error | PASS | 2 | 0 | 10 | không | không | 2970 |
+| S06_delete | risky | risky | PASS | 0 | 1 | 8 | có | có | 3747 |
+| S07_dead_letter | error | error | PASS | 1 | 0 | 5 | không | không | 830 |
+
+- 2 scenario ghi nhận quyết định duyệt trước khi bất kỳ side effect nào chạy.
+- 2 scenario đi vào retry loop, tổng cộng 3 lần ghé node `retry`; tất cả đều vẫn kết thúc tại `finalize`.
+- Mọi scenario đều khớp route mong đợi và đều sinh ra output.
+
+## 5. Phân tích failure mode
 
 **1. Retry không có giới hạn / tool thất bại.** Mock tool trả về payload `ERROR` cho ticket
 thuộc error route khi `attempt < 2`, `evaluate` biến điều đó thành `needs_retry`, và `retry`
@@ -103,132 +120,37 @@ provider, ghi nguyên nhân vào `errors` và phát ra event `failed`. Ở nơi 
 (keyword fallback trong `classify`, câu hỏi mẫu trong `clarify`), event mang
 `fallback=True` để một sự cố provider không bao giờ bị nhầm thành một lần phân loại thành
 công trong audit trail.
-"""
 
-RECOVERY_EVIDENCE_PATH = Path("outputs/recovery_evidence.json")
-
-
-def _recovery_evidence() -> str:
-    """Embed the recovery-demo evidence file when it exists."""
-    if not RECOVERY_EVIDENCE_PATH.exists():
-        return (
-            "Chưa có `outputs/recovery_evidence.json` trên đĩa — chạy "
-            "`agent-lab recovery-demo` (rồi chạy lại với `--inspect-only`) để tạo file này."
-        )
-    try:
-        payload = json.loads(RECOVERY_EVIDENCE_PATH.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
-        return f"Không đọc được `{RECOVERY_EVIDENCE_PATH}`: {exc}"
-    header = (
-        f"Bằng chứng replay ghi trong `{RECOVERY_EVIDENCE_PATH}` "
-        f"(mode: {payload.get('mode')}, pid {payload.get('pid')}):"
-    )
-    body = json.dumps(payload, indent=2, ensure_ascii=False)
-    return f"{header}\n\n```json\n{body}\n```"
-
-
-def _summary_table(metrics: MetricsReport) -> str:
-    rows = [
-        ("Tổng số scenario", str(metrics.total_scenarios)),
-        ("Tỉ lệ thành công", f"{metrics.success_rate:.0%}"),
-        ("Số node trung bình mỗi run", f"{metrics.avg_nodes_visited:.2f}"),
-        ("Tổng số lần retry", str(metrics.total_retries)),
-        ("Tổng số lần vào approval", str(metrics.total_interrupts)),
-        ("Đã kiểm chứng resume / state history", "có" if metrics.resume_success else "chưa"),
-    ]
-    lines = ["| Chỉ số | Giá trị |", "|---|---:|"]
-    lines += [f"| {name} | {value} |" for name, value in rows]
-    return "\n".join(lines)
-
-
-def _scenario_row(item: ScenarioMetric) -> str:
-    return (
-        f"| {item.scenario_id} | {item.expected_route} | {item.actual_route or '-'} | "
-        f"{'PASS' if item.success else 'FAIL'} | {item.retry_count} | {item.interrupt_count} | "
-        f"{item.nodes_visited} | {'có' if item.approval_required else 'không'} | "
-        f"{'có' if item.approval_observed else 'không'} | {item.latency_ms} |"
-    )
-
-
-def _scenario_table(metrics: MetricsReport) -> str:
-    header = (
-        "| Scenario | Route mong đợi | Route thực tế | Kết quả | Retry | Approval | "
-        "Event | Cần duyệt | Quan sát được duyệt | Latency (ms) |\n"
-        "|---|---|---|---|---:|---:|---:|---|---|---:|"
-    )
-    rows = [_scenario_row(item) for item in metrics.scenario_metrics]
-    return "\n".join([header, *rows])
-
-
-def _observations(metrics: MetricsReport) -> str:
-    failures = [item for item in metrics.scenario_metrics if not item.success]
-    retried = [item for item in metrics.scenario_metrics if item.retry_count]
-    approvals = [item for item in metrics.scenario_metrics if item.approval_observed]
-    lines = [
-        f"- {len(approvals)} scenario ghi nhận quyết định duyệt trước khi bất kỳ side effect "
-        "nào chạy.",
-        f"- {len(retried)} scenario đi vào retry loop, tổng cộng {metrics.total_retries} lần "
-        "ghé node `retry`; tất cả đều vẫn kết thúc tại `finalize`.",
-    ]
-    if failures:
-        lines.append(
-            "- Route sai hoặc thiếu output: "
-            + ", ".join(
-                f"`{item.scenario_id}` (mong đợi `{item.expected_route}`, "
-                f"nhận `{item.actual_route}`)"
-                for item in failures
-            )
-            + "."
-        )
-    else:
-        lines.append("- Mọi scenario đều khớp route mong đợi và đều sinh ra output.")
-    return "\n".join(lines)
-
-
-def render_report(metrics: MetricsReport) -> str:
-    """Render a complete lab report from metrics data."""
-    persistence = (
-        "Graph đã compile nhận checkpointer được dựng từ `configs/lab.yaml`, và mỗi run được"
-        " invoke với `{'configurable': {'thread_id': state['thread_id']}}`. Sau khi chạy, CLI"
-        " đọc lại checkpoint qua `graph.get_state()` / `graph.get_state_history()` cho từng"
-        " thread"
-        + (
-            ", và lần chạy này thành công — nên `resume_success=true`."
-            if metrics.resume_success
-            else ", nhưng lần chạy này không trả về checkpoint, nên `resume_success` vẫn là"
-            " false."
-        )
-        + " Để có bằng chứng bền vững hơn, `agent-lab recovery-demo` ghi một run vào SQLite"
-        " checkpointer, sau đó một process thứ hai mở lại chính database đó với"
-        " `--inspect-only` và replay state history — chứng minh checkpoint sống sót sau khi"
-        " process kết thúc."
-    )
-
-    return f"""# Day 08 Lab Report — LangGraph Agentic Orchestration
-
-> Báo cáo được sinh tự động bởi `render_report()` từ `outputs/metrics.json`.
-
-## 1. Thông tin sinh viên
-
-- Họ tên: Bé Nguyễn Hà Sơn (2A202601454)
-- Repo/commit: DAY23_TRACK3_2A202601454_BeNguyenHaSon, branch `main`
-- Provider: OpenAI (`gpt-4o-mini` qua `get_llm()`)
-
-{_ARCHITECTURE}
-## 4. Kết quả scenario
-
-{_summary_table(metrics)}
-
-{_scenario_table(metrics)}
-
-{_observations(metrics)}
-
-{_FAILURE_ANALYSIS}
 ## 6. Bằng chứng persistence / recovery
 
-{persistence}
+Graph đã compile nhận checkpointer được dựng từ `configs/lab.yaml`, và mỗi run được invoke với `{'configurable': {'thread_id': state['thread_id']}}`. Sau khi chạy, CLI đọc lại checkpoint qua `graph.get_state()` / `graph.get_state_history()` cho từng thread, và lần chạy này thành công — nên `resume_success=true`. Để có bằng chứng bền vững hơn, `agent-lab recovery-demo` ghi một run vào SQLite checkpointer, sau đó một process thứ hai mở lại chính database đó với `--inspect-only` và replay state history — chứng minh checkpoint sống sót sau khi process kết thúc.
 
-{_recovery_evidence()}
+Bằng chứng replay ghi trong `outputs\recovery_evidence.json` (mode: inspect-only (fresh process), pid 12864):
+
+```json
+{
+  "mode": "inspect-only (fresh process)",
+  "pid": 12864,
+  "database": "checkpoints.db",
+  "thread_id": "recovery-demo-01",
+  "checkpoint_id": "1f1a064f-c16d-6470-8006-f08fbf97f428",
+  "checkpoints_in_history": 8,
+  "next_nodes": [],
+  "route": "tool",
+  "attempt": 0,
+  "events_recorded": 6,
+  "nodes_replayed": [
+    "intake",
+    "classify",
+    "tool",
+    "evaluate",
+    "answer",
+    "finalize"
+  ],
+  "final_answer_preview": "Your order status for order 12345 is currently open. It is being handled by our support team, and we aim to resolve it within 24 hours. If you have any further ",
+  "resume_success": true
+}
+```
 
 ## 7. Phần mở rộng đã làm
 
@@ -250,11 +172,3 @@ def render_report(metrics: MetricsReport) -> str:
 3. Bổ sung bộ regression gồm các ticket đối kháng (prompt injection, ý định pha trộn, text
    rỗng) để assert route và bất biến "không có side effect trước khi được duyệt", nhờ đó việc
    sửa prompt của classifier không thể âm thầm làm hỏng tính chất an toàn này.
-"""
-
-
-def write_report(metrics: MetricsReport, output_path: str | Path) -> None:
-    """Write the rendered report to a file."""
-    path = Path(output_path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(render_report(metrics), encoding="utf-8")

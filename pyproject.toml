@@ -14,6 +14,7 @@ dependencies = [
   "rich>=13.7",
   "typer>=0.12",
   "langgraph>=0.3.0",
+  "python-dotenv>=1.0",
 ]
 
 [project.optional-dependencies]
@@ -41,7 +42,28 @@ target-version = "py311"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "B", "UP", "N", "ANN"]
-ignore = ["ANN101", "ANN102"]
+# ANN401: `Any` is deliberate at the LangGraph boundary (checkpointer / compiled graph
+# / provider message objects have no stable public type).
+ignore = ["ANN401"]
+
+[tool.ruff.lint.per-file-ignores]
+# Provided test files keep pytest conventions: no return/param annotations, module-level
+# skip markers evaluated before imports (E402), and long inline state dicts.
+"tests/*" = ["ANN", "E402", "E501", "F401"]
+
+[tool.mypy]
+python_version = "3.11"
+
+[[tool.mypy.overrides]]
+# Optional provider packages / checkpoint backends and PyYAML ship no type stubs.
+module = [
+  "yaml",
+  "langchain_google_genai.*",
+  "langchain_anthropic.*",
+  "langgraph.checkpoint.sqlite.*",
+  "langgraph.checkpoint.postgres.*",
+]
+ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 minversion = "8.0"

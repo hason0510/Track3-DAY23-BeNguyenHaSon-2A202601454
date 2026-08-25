@@ -10,34 +10,96 @@ from typing import Any
 
 from .state import AgentState
 
+#: Registered graph-node name -> node function attribute in ``nodes.py``.
+#: The keys are the public contract: routing functions return exactly these strings.
+NODE_NAMES: dict[str, str] = {
+    "intake": "intake_node",
+    "classify": "classify_node",
+    "tool": "tool_node",
+    "evaluate": "evaluate_node",
+    "answer": "answer_node",
+    "clarify": "ask_clarification_node",
+    "risky_action": "risky_action_node",
+    "approval": "approval_node",
+    "retry": "retry_or_fallback_node",
+    "dead_letter": "dead_letter_node",
+    "finalize": "finalize_node",
+}
 
-def build_graph(checkpointer: Any | None = None):
+
+def build_graph(checkpointer: Any | None = None) -> Any:
     """Build and compile the LangGraph workflow.
 
-    TODO(student): Build the complete graph with this architecture:
+    Architecture::
 
-    START → intake → classify → [conditional: route_after_classify]
-      simple       → answer → finalize → END
-      tool         → tool → evaluate → [conditional: route_after_evaluate]
-                                          success → answer → finalize → END
-                                          needs_retry → retry → [conditional: route_after_retry]
-                                                                  tool (retry)
-                                                                  dead_letter → finalize → END
-      missing_info → clarify → finalize → END
-      risky        → risky_action → approval → [conditional: route_after_approval]
-                                                  approved → tool → evaluate → ...
-                                                  rejected → clarify → finalize → END
-      error        → retry → [conditional: route_after_retry] → ...
+        START → intake → classify → [route_after_classify]
+          simple       → answer → finalize → END
+          tool         → tool → evaluate → [route_after_evaluate]
+                                              success     → answer → finalize → END
+                                              needs_retry → retry → [route_after_retry]
+                                                                      tool (retry)
+                                                                      dead_letter → finalize → END
+          missing_info → clarify → finalize → END
+          risky        → risky_action → approval → [route_after_approval]
+                                                      approved → tool → evaluate → ...
+                                                      rejected → clarify → finalize → END
+          error        → retry → [route_after_retry] → ...
 
-    Steps:
-    1. Import StateGraph, START, END from langgraph.graph
-    2. Create StateGraph(AgentState)
-    3. Import and add all nodes from nodes.py (11 nodes total)
-    4. Import and use routing functions from routing.py for conditional edges
-    5. Add fixed edges (e.g., START→intake, intake→classify, tool→evaluate, etc.)
-    6. Add conditional edges using add_conditional_edges()
-    7. Compile with checkpointer: graph.compile(checkpointer=checkpointer)
-
-    Reference: https://langchain-ai.github.io/langgraph/how-tos/create-react-agent/
+    The ``checkpointer`` argument is passed straight through to ``compile()``; the caller
+    (CLI/tests) owns its lifecycle and backend choice, so this builder never creates one.
     """
-    raise NotImplementedError("TODO(student): build and compile the LangGraph StateGraph")
+    from langgraph.graph import END, START, StateGraph
+
+    from . import nodes
+    from .routing import (
+        route_after_approval,
+        route_after_classify,
+        route_after_evaluate,
+        route_after_retry,
+    )
+
+    builder = StateGraph(AgentState)
+
+    # 1) Register the 11 nodes under their public names.
+    for node_name, function_name in NODE_NAMES.items():
+        builder.add_node(node_name, getattr(nodes, function_name))
+
+    # 2) Fixed edges — the parts of the flow that never branch.
+    builder.add_edge(START, "intake")
+    builder.add_edge("intake", "classify")
+    builder.add_edge("tool", "evaluate")
+    builder.add_edge("risky_action", "approval")
+    builder.add_edge("answer", "finalize")
+    builder.add_edge("clarify", "finalize")
+    builder.add_edge("dead_letter", "finalize")
+    builder.add_edge("finalize", END)
+
+    # 3) Conditional edges — path maps mirror the routing decision tables exactly.
+    builder.add_conditional_edges(
+        "classify",
+        route_after_classify,
+        {
+            "answer": "answer",
+            "tool": "tool",
+            "clarify": "clarify",
+            "risky_action": "risky_action",
+            "retry": "retry",
+        },
+    )
+    builder.add_conditional_edges(
+        "evaluate",
+        route_after_evaluate,
+        {"retry": "retry", "answer": "answer"},
+    )
+    builder.add_conditional_edges(
+        "retry",
+        route_after_retry,
+        {"tool": "tool", "dead_letter": "dead_letter"},
+    )
+    builder.add_conditional_edges(
+        "approval",
+        route_after_approval,
+        {"tool": "tool", "clarify": "clarify"},
+    )
+
+    return builder.compile(checkpointer=checkpointer)

@@ -1,0 +1,22 @@
+{
+  "mode": "inspect-only (fresh process)",
+  "pid": 12864,
+  "database": "checkpoints.db",
+  "thread_id": "recovery-demo-01",
+  "checkpoint_id": "1f1a064f-c16d-6470-8006-f08fbf97f428",
+  "checkpoints_in_history": 8,
+  "next_nodes": [],
+  "route": "tool",
+  "attempt": 0,
+  "events_recorded": 6,
+  "nodes_replayed": [
+    "intake",
+    "classify",
+    "tool",
+    "evaluate",
+    "answer",
+    "finalize"
+  ],
+  "final_answer_preview": "Your order status for order 12345 is currently open. It is being handled by our support team, and we aim to resolve it within 24 hours. If you have any further ",
+  "resume_success": true
+}

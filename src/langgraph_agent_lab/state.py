@@ -6,9 +6,9 @@ Students should extend the schema only when needed. Keep state lean and serializ
 from __future__ import annotations
 
 from enum import StrEnum
+from operator import add
 from typing import Annotated, Any, TypedDict
 
-from operator import add
 from pydantic import BaseModel, Field, field_validator
 
 
@@ -41,8 +41,16 @@ class ApprovalDecision(BaseModel):
 class AgentState(TypedDict, total=False):
     """LangGraph state.
 
-    TODO(student): decide which fields should be append-only and which should be overwritten.
-    The current annotations give a safe starting point for auditability.
+    Reducer policy:
+
+    * Append-only (``Annotated[list, add]``): ``messages``, ``tool_results``, ``errors``,
+      ``events``. These are chronological audit trails - a node returns only the *new*
+      entries and LangGraph merges them, so no node may mutate the incoming list.
+    * Overwrite (plain annotation): every scalar / "current value" field. ``route``,
+      ``attempt``, ``evaluation_result``, ``approval`` and friends describe the state
+      *right now*, so the latest write wins.
+
+    All values stay JSON-serializable so any checkpointer backend can persist them.
     """
 
     thread_id: str
@@ -53,9 +61,16 @@ class AgentState(TypedDict, total=False):
     attempt: int
     max_attempts: int
     final_answer: str | None
-    # TODO(student): you will need additional fields for clarification, risky actions,
-    # approval decisions, and retry-loop gating. Add them as you implement nodes.
-    # Hint: check what your nodes return and what your routing functions read.
+    # --- student-added fields -------------------------------------------------
+    # Retry-loop gate read by route_after_evaluate ("success" | "needs_retry").
+    evaluation_result: str
+    # Clarification flow: the question we send back to the user.
+    pending_question: str | None
+    # Risky flow: the side effect proposed *before* any tool runs.
+    proposed_action: str | None
+    # HITL flow: plain serializable mapping shaped like ApprovalDecision.
+    approval: dict[str, Any] | None
+    # --- append-only audit trails ---------------------------------------------
     messages: Annotated[list[str], add]
     tool_results: Annotated[list[str], add]
     errors: Annotated[list[str], add]
@@ -90,6 +105,10 @@ def initial_state(scenario: Scenario) -> AgentState:
         "attempt": 0,
         "max_attempts": scenario.max_attempts,
         "final_answer": None,
+        "evaluation_result": "",
+        "pending_question": None,
+        "proposed_action": None,
+        "approval": None,
         "messages": [],
         "tool_results": [],
         "errors": [],
@@ -98,5 +117,17 @@ def initial_state(scenario: Scenario) -> AgentState:
 
 
 def make_event(node: str, event_type: str, message: str, **metadata: Any) -> dict[str, Any]:
-    """Create a normalized event payload."""
-    return LabEvent(node=node, event_type=event_type, message=message, metadata=metadata).model_dump()
+    """Create a normalized event payload.
+
+    ``latency_ms`` is promoted out of the metadata into the typed field so metrics can
+    aggregate it without knowing each node's private metadata keys.
+    """
+    latency_ms = int(metadata.pop("latency_ms", 0) or 0)
+    event = LabEvent(
+        node=node,
+        event_type=event_type,
+        message=message,
+        latency_ms=latency_ms,
+        metadata=metadata,
+    )
+    return event.model_dump()
